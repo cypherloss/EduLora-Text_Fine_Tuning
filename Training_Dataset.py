@@ -12,6 +12,9 @@ MIN_WORDS = 20
 
 
 def split_into_paragraphs(text: str) -> list[str]:
+    if not text or not text.strip():
+        return []
+
     paragraphs = re.split(
         r"\n\s*\n",
         text,
@@ -20,7 +23,7 @@ def split_into_paragraphs(text: str) -> list[str]:
     return [
         paragraph.strip()
         for paragraph in paragraphs
-        if len(paragraph.split()) >= MIN_WORDS
+        if paragraph.strip() and len(paragraph.split()) >= MIN_WORDS
     ]
 
 

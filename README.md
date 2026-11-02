@@ -1,74 +1,96 @@
-# Fine_Tuining
+﻿# EduLora Text Fine-Tuning
 
-PDF-to-model fine-tuning pipeline for Qwen3 0.6B. It extracts educational text,
-creates simple supervised examples, fine-tunes with PEFT/LoRA on CPU, merges
-the adapter, and can package the result for Ollama.
+A lightweight educational text fine-tuning pipeline for Qwen3 0.6B. It reads source documents from PDF, TXT, DOCX, and EPUB files, cleans and normalizes the extracted text, builds a supervised chat-style dataset, tokenizes it with the selected Hugging Face tokenizer, and fine-tunes a CPU-only LoRA adapter.
 
-> **Model:** This project uses `Qwen/Qwen3-0.6B`. The former `qwen3.5:0.8b`
-> label was inaccurate; the trained checkpoint is Qwen3 0.6B, not Qwen3.5 0.8B.
+This repository is intended for educational content experiments and small-scale fine-tuning. The default objective is simple: the model is shown a paragraph and trained to reproduce that paragraph in a user/assistant chat format. This is useful for reconstruction-style learning and educational text restatement, but it does not automatically create fact-checking or domain-specific tutoring behavior.
 
-## Pipeline overview
+> Model: Qwen/Qwen3-0.6B
 
-The pipeline has four data-preparation stages followed by CPU fine-tuning:
+## Overview
 
-1. Extract text from PDFs into page-level JSON.
-2. Clean extracted text and normalize paragraphs.
-3. Turn paragraphs into user/assistant chat examples in JSONL.
-4. Apply the selected model tokenizer's chat template and save token IDs.
-5. Fine-tune the base model with a PEFT LoRA adapter, save the adapter, and
-  merge it with the base model.
+The pipeline includes these stages:
 
-The generated examples are a basic reconstruction task: the user message asks
-for an explanation of a paragraph, and the assistant target is the same
-paragraph. This does not create independent question-answer pairs or verify
-factual accuracy. Review the generated dataset before training if you need a
-different learning objective.
+1. Extract text from supported source files in `data/pdfs/`.
+2. Normalize extracted text and split it into paragraphs.
+3. Convert paragraphs into user/assistant examples in JSONL format.
+4. Tokenize the examples with the model tokenizer and store the dataset cache.
+5. Train LoRA adapters on CPU.
+6. Merge the trained adapter with the base model and save the checkpoint.
 
-All commands below are intended to run from the repository root.
+## Supported source formats
+
+The extractor supports:
+
+- PDF
+- TXT
+- DOCX
+- EPUB
+
+Place any supported file into `data/pdfs/` and run the pipeline from the repo root.
+
+### Convert a folder of EPUB books to PDF
+
+The project can read EPUB files directly. If you also need PDF copies, install
+[Calibre](https://calibre-ebook.com/download) and put the EPUB files in
+`data/epubs/`. Run:
+
+```bash
+python Convert_Epub_To_Pdf.py
+```
+
+By default, the script searches `data/epubs/` recursively and writes the PDFs
+to `data/pdfs/`, which is the folder used by the rest of the project's data
+pipeline. Existing PDFs are skipped. To replace them, add `--overwrite`.
+
+Use a different input or output folder with:
+
+```bash
+python Convert_Epub_To_Pdf.py --input-dir path/to/epubs --output-dir path/to/pdfs
+```
+
+If Calibre's `ebook-convert` command is not on `PATH`, provide its executable:
+
+```bash
+python Convert_Epub_To_Pdf.py --converter "C:\Program Files\Calibre2\ebook-convert.exe"
+```
+
+The conversion script preserves subfolder structure and reports failed
+conversions separately; its exit code is non-zero if any book fails.
 
 ## Project layout
 
 | Path | Purpose |
 | --- | --- |
-| `Extract_Pdf.py` | Reads `data/pdfs/*.pdf`; writes page-level JSON under `data/raw/`. |
-| `Clean_Text.py` | Normalizes the extracted JSON; writes cleaned documents under `data/clean/`. |
-| `Training_Dataset.py` | Builds `data/processed/training.jsonl` from cleaned page text. |
-| `Tokenize.py` | Applies the configured model tokenizer and writes `data/tokenized/`. |
-| `fine_tuneing.py` | Validates the tokenized data, trains the CPU LoRA adapter, and saves adapter and merged outputs under `models/`. |
-| `Evaluate_Model.py` | Scores the merged model on held-out JSONL examples and saves generated/reference samples. |
-| `test.py` | Checks the Python/dependency setup and validates the generated dataset and token IDs. |
-| `requirements.txt` | Python dependencies and compatible PyTorch/torchvision pins. |
-| `Modelfile` | Imports the converted GGUF model into Ollama. |
-| `data/pdfs/` | PDF inputs. These are source data, not disposable build output. |
-| `data/raw/`, `data/clean/`, `data/processed/` | Regenerable intermediate datasets. |
-| `data/tokenized/` | Regenerable Hugging Face dataset cache; excluded from Git. |
-| `models/` | Generated training outputs; excluded from Git. |
+| `Extract_Pdf.py` | Extracts text from PDF, TXT, DOCX, and EPUB files and writes raw JSON under `data/raw/`. |
+| `Convert_Epub_To_Pdf.py` | Batch converts EPUB books to PDFs with Calibre and saves them under `data/pdfs/`. |
+| `Clean_Text.py` | Cleans the extracted JSON and normalizes paragraph spacing. |
+| `Training_Dataset.py` | Builds `data/processed/training.jsonl` from cleaned text. |
+| `Tokenize.py` | Loads the tokenizer, applies chat templating, and saves tokenized data under `data/tokenized/`. |
+| `fine_tuneing.py` | Validates the dataset, trains the CPU LoRA adapter, and saves the merged model. |
+| `Evaluate_Model.py` | Evaluates the base and fine-tuned models on the same held-out JSONL examples. |
+| `test.py` | Validates Python compatibility, dependencies, model settings, dataset structure, and tokenized cache. |
+| `requirements.txt` | Project dependencies and compatible version pins. |
+| `Modelfile` | Ollama model definition for a converted GGUF model. |
+| `data/pdfs/` | Source documents. |
+| `data/raw/` | Raw extracted JSON output. |
+| `data/clean/` | Cleaned JSON output. |
+| `data/processed/` | Training dataset output. |
+| `data/tokenized/` | Tokenized dataset cache. |
+| `models/` | LoRA and merged model outputs. |
 
 ## Requirements
 
-- Windows 10/11 or Linux. Training is configured for CPU.
-- Python 3.12 is recommended; the smoke-test script accepts Python 3.10 through
-  3.13. Python 3.12.15 was used for development checks.
-- `uv` is used below to create the environment and install packages.
-- Enough system memory for the float32 base model, LoRA optimizer state, and
-  training activations. CPU training can be terminated by the OS when memory is
-  exhausted; gradient checkpointing and the short sequence limit reduce but do
-  not eliminate that risk.
-- Internet access on first model/tokenizer load, unless the Hugging Face files
-  are already cached locally.
-
-No CUDA, GPU, or running Ollama service is used by the training script. The
-model identifier is a Hugging Face repository name; Ollama deployment is a
-separate step described below.
+- Windows 10/11 or Linux
+- Python 3.10 through 3.13
+- `uv` recommended for environment setup and dependency installation
+- Internet access on the first tokenizer/model download
+- Enough RAM for the base model, optimizer state, and CPU activations
 
 ## Installation
 
-Choose the setup instructions for your operating system. Run them from the
-repository root. `uv` installs Python 3.12 if it is not already available.
+Run the commands from the repository root.
 
 ### Linux
-
-From the repository root:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -78,15 +100,13 @@ source .venv/bin/activate
 uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
-To activate the environment in later terminals:
+To activate the environment later:
 
 ```bash
 source .venv/bin/activate
 ```
 
 ### Windows PowerShell
-
-From the repository root:
 
 ```powershell
 winget install --id=astral-sh.uv -e
@@ -97,7 +117,7 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 ```
 
-To activate the environment in later PowerShell sessions:
+To activate later:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
@@ -114,20 +134,17 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 ```
 
-To activate in later terminals:
+To activate later:
 
 ```cmd
 .venv\Scripts\activate.bat
 ```
 
-The dependency file pins the PyTorch and torchvision versions together to avoid
-the import-time operator mismatch encountered with incompatible installations.
-If you already have a different environment, install into the project virtual
-environment rather than mixing system packages with the project dependencies.
+## Data preparation
 
-## Prepare data
+Place your supported source files in `data/pdfs/`.
 
-Place PDF inputs in `data/pdfs/`. Then run the pipeline in order:
+Then run the pipeline:
 
 ```bash
 python Extract_Pdf.py
@@ -136,49 +153,94 @@ python Training_Dataset.py
 python Tokenize.py
 ```
 
-The stages report an error if their required input directory has no files.
-`Training_Dataset.py` splits cleaned page text on blank lines, skips paragraphs
-shorter than 20 words, and reports an error if it produces no examples.
+### Extraction details
 
-Each JSONL record has this shape:
+`Extract_Pdf.py` scans `data/pdfs/` and extracts text from each supported file. It stores a JSON document for each source file in `data/raw/`.
+
+Example raw output:
+
+```json
+{
+  "source": "example.pdf",
+  "pages": [
+    {"page": 1, "text": "..."}
+  ]
+}
+```
+
+TXT and DOCX are treated as single-page content. EPUB content is extracted from its embedded HTML/XML content before being normalized.
+
+### Cleaning details
+
+`Clean_Text.py` performs the following:
+
+- fixes Windows/Linux line endings
+- repairs hyphenated words that were split across lines
+- normalizes spaces and tabs
+- collapses single-line breaks into paragraph spacing
+- removes excessive blank lines
+- trims paragraph edges
+
+The cleaned content is written to `data/clean/`.
+
+### Training dataset details
+
+`Training_Dataset.py` splits the cleaned text into paragraphs and keeps only paragraphs with at least 20 words.
+
+A generated training record looks like:
 
 ```json
 {
   "messages": [
-    {"role": "user", "content": "Explain the following educational content clearly.\n\n..."},
-    {"role": "assistant", "content": "..."}
+    {
+      "role": "user",
+      "content": "Explain the following educational content clearly.\n\n..."
+    },
+    {
+      "role": "assistant",
+      "content": "..."
+    }
   ],
-  "metadata": {"source": "book.pdf", "page": 1}
+  "metadata": {
+    "source": "book.pdf",
+    "page": 1
+  }
 }
 ```
 
-The tokenizer applies the Qwen3 chat template and truncates each example to 128
-tokens. `Tokenize.py` stages the replacement dataset before swapping it into
-`data/tokenized/`, so a failed rebuild leaves the previous cache available.
+The generated file is saved at `data/processed/training.jsonl`.
 
-## Validate the data and environment
+### Tokenization details
 
-After preparing data, run:
+`Tokenize.py` loads the tokenizer for `Qwen/Qwen3-0.6B`, applies the chat template, and truncates each example to a maximum of 128 tokens.
+
+The tokenized dataset is saved under `data/tokenized/`.
+
+## Validation
+
+Validate the environment and data before training:
 
 ```bash
 python test.py
 ```
 
-The full check verifies the Python version, required imports, model identifier,
-JSONL structure, tokenized dataset shape, token ID range, and training sequence
-limit. It loads the tokenizer, so the first run may need network access.
+This script checks:
 
-To validate the environment and model identifier before preparing data:
+- Python version compatibility
+- required dependencies
+- model identifier configuration
+- JSONL structure
+- tokenized dataset columns
+- token ID range compatibility
+- maximum training sequence length
+
+To validate only the environment before creating the dataset:
 
 ```bash
 python test.py --skip-data
 ```
 
-The normal check also prevents the earlier embedding-index failure: it checks
-that every cached token ID fits the tokenizer and rejects stale or incompatible
-tokenized data.
-
-## Train
+## Fine-tuning
 
 Start training from the repository root:
 
@@ -186,89 +248,78 @@ Start training from the repository root:
 python fine_tuneing.py
 ```
 
-The training configuration is deliberately CPU-only:
+The training configuration is CPU-only and intentionally conservative:
 
-- Loads the base model in float32 and explicitly places it on the CPU.
-- Uses LoRA with rank 16, alpha 32, dropout 0.05, and attention/MLP projection
-  modules as targets.
-- Trains for one epoch with batch size 1 and gradient accumulation of 8.
-- Uses a 128-token maximum sequence length and non-reentrant gradient
-  checkpointing to reduce activation memory.
-- Disables fp16/bf16 and pinned-memory data loading.
-- Aligns the model and generation configuration's BOS/EOS/PAD IDs to the
-  tokenizer before training.
+- base model loaded in float32
+- model placed on CPU
+- LoRA rank 16 and alpha 32
+- dropout 0.05
+- attention and MLP projection targets
+- 1 epoch, batch size 1, gradient accumulation 8
+- max sequence length 128
+- gradient checkpointing enabled
+- fp16/bf16 disabled
+- dataloader pinning disabled
+- BOS/EOS/PAD alignment with the tokenizer
 
-CPU fine-tuning is slow. If the operating system prints `Killed`, it terminated
-the process, usually because memory was exhausted. The code already applies
-gradient checkpointing and a short sequence limit; close other memory-heavy
-applications before trying again. Do not increase the sequence length or batch
-size on a memory-constrained machine.
+This setup is designed for stability on consumer hardware, but fine-tuning can still be memory intensive. If the OS kills the process, it is usually due to memory exhaustion. Keep other heavy applications closed when training.
 
-## Evaluate
+## Outputs
 
-Evaluation must use examples that were not included in the model's training
-data. The current codebase does not generate a held-out split automatically.
-Create `data/evaluation.jsonl` with one JSON object per line, using the same
-`messages` format as the training data and an assistant answer as the final
-message. Keep this file separate from `data/processed/training.jsonl`.
+Successful training writes:
 
-For example, use a prompt and reference answer from source material that was
-not used to train the model:
+- `models/qwen3-0.6b-lora/` — LoRA adapter and tokenizer files
+- `models/qwen3-0.6b-merged/` — merged model checkpoint
+
+The model is stored in Hugging Face format and can be converted to GGUF for Ollama use.
+
+## Evaluation
+
+Create a held-out evaluation file at `data/evaluation.jsonl` before running evaluation.
+
+Each row should use the same message format as the training dataset and should include a final assistant answer. Keep this file separate from `data/processed/training.jsonl`.
+
+Example:
 
 ```json
 {"messages":[{"role":"user","content":"Explain this educational content clearly.\n\n[held-out passage]"},{"role":"assistant","content":"[reference answer]"}],"metadata":{"source":"held-out-source.pdf","page":1}}
 ```
 
-Run the evaluator from the repository root after the merged model exists:
+Keep the evaluation examples out of the training data. The project does not create a held-out split automatically.
+
+After fine-tuning has produced `models/qwen3-0.6b-merged/`, evaluate both the base and fine-tuned models on the same examples:
 
 ```bash
 python Evaluate_Model.py
 ```
 
-By default it loads `models/qwen3-0.6b-merged/`, reads
-`data/evaluation.jsonl`, and writes `models/evaluation/summary.json` and
-`models/evaluation/predictions.jsonl`. The summary reports mean negative
-log-likelihood and perplexity for reference answer tokens, plus normalized
-exact-match rate for greedy generated answers. The predictions file includes
-each reference and generated answer for qualitative review.
+By default, the script evaluates `Qwen/Qwen3-0.6B` and the merged model, then writes results to:
 
-To compare the fine-tuned model with its base checkpoint, evaluate both against
-the same held-out file and use separate output directories:
+- `models/evaluation/base/summary.json`
+- `models/evaluation/base/predictions.jsonl`
+- `models/evaluation/finetuned/summary.json`
+- `models/evaluation/finetuned/predictions.jsonl`
+
+The summary reports token-weighted reference-answer negative log-likelihood and perplexity, plus normalized exact-match rate for greedy generations. The predictions file stores the reference answer, generated answer, metadata, and per-example scoring results. Exact match is a strict text metric and does not measure semantic similarity.
+
+Evaluate only one model, change the evaluation file or output directory, or adjust the token limits with options such as:
 
 ```bash
-python Evaluate_Model.py --output-dir models/evaluation-finetuned
-python Evaluate_Model.py --model Qwen/Qwen3-0.6B --output-dir models/evaluation-base
+python Evaluate_Model.py --models base
+python Evaluate_Model.py --models finetuned
+python Evaluate_Model.py --data data/evaluation.jsonl --output-dir models/my-evaluation
+python Evaluate_Model.py --max-length 512 --max-new-tokens 64
 ```
 
-The first base-model run downloads the checkpoint if it is not cached. Exact
-match is a strict copying metric, not a measure of semantic equivalence. Review
-the saved predictions and interpret perplexity in light of this project's
-paragraph-copy training objective.
+The fine-tuned model is evaluated on CPU in float32, like the training setup. The first base-model run may download the model if it is not cached.
 
-## Outputs and cleanup
+## Ollama deployment
 
-Successful training writes:
+The repo includes a `Modelfile` for local Ollama deployment.
 
-- `models/qwen3-0.6b-lora/` — PEFT LoRA adapter plus tokenizer files.
-- `models/qwen3-0.6b-merged/` — merged Hugging Face model and tokenizer, ready
-  to convert to GGUF for Ollama.
+### Convert the merged model to GGUF
 
-The model files are saved in Hugging Face format. Convert the merged model
-directory to GGUF for Ollama; the adapter directory alone is not a complete
-model.
-
-## Deploy with Ollama
-
-Install Ollama for Windows or Linux from the [official download page](https://ollama.com/download),
-and make sure its service is running. On Windows, importing the Safetensors
-directory directly may fail because Ollama reports that the MLX runtime is
-unavailable. Convert the merged model to GGUF first with llama.cpp. Skip the
-conversion if `models/qwen3-0.6b-f16.gguf` already exists.
-
-### Convert the model
-
-If llama.cpp is not already available under `tools/llama.cpp`, clone it and
-install the converter dependencies in an isolated uv environment.
+If llama.cpp is not already installed, clone it and install conversion dependencies.
 
 Linux:
 
@@ -292,89 +343,42 @@ Set-Location ..\..
 & .\tools\llama.cpp\.venv\Scripts\python.exe .\tools\llama.cpp\convert_hf_to_gguf.py .\models\qwen3-0.6b-merged --outfile .\models\qwen3-0.6b-f16.gguf --outtype f16
 ```
 
-The conversion creates an F16 GGUF. It is not quantized, so it uses more disk
-space and memory than a quantized version. Ollama imports GGUF as provided.
-
 ### Create and run locally
-
-The included `Modelfile` points to `models/qwen3-0.6b-f16.gguf`.
 
 ```bash
 ollama create edulora -f Modelfile
 ollama run edulora
 ```
 
-### Publish or pull from your Ollama account
-
-To publish under your Ollama account, add your Ollama public key in the account
-settings, then tag and push the local model. Replace `<username>` with your
-Ollama username:
-
-```bash
-ollama cp edulora <username>/edulora
-ollama push <username>/edulora
-```
-
-Other users can install and run the published model with:
-
-```bash
-ollama run <username>/edulora
-```
-
-See Ollama's [model import and sharing guide](https://docs.ollama.com/import)
-for account key and publishing details. Ollama's local API is available at
-`http://localhost:11434` while its service is running.
-
-Generated intermediate data and model outputs are ignored by Git. PDFs in
-`data/pdfs/` are source inputs and are not regenerated by the pipeline. Raw,
-cleaned, processed, tokenized, adapter, merged, and GGUF artifacts can be
-rebuilt from their upstream inputs, but may take time, disk space, or network
-access; do not delete them just to clean the repository unless you are ready to
-rebuild them. The virtual environment can be recreated from `requirements.txt`.
-
 ## Troubleshooting
 
-### `IndexError: index out of range in self`
+### Missing dependencies
 
-The tokenized cache was created with token IDs that do not fit the active
-model/tokenizer. Rebuild it and validate:
+```bash
+uv pip install -r requirements.txt
+```
+
+### No supported files found
+
+Ensure at least one of the supported formats exists in `data/pdfs/`.
+
+### Token index mismatch
+
+If you see tokenizer or embedding errors, rebuild the tokenized cache:
 
 ```bash
 python Tokenize.py
 python test.py
 ```
 
-### The training process ends with `Killed`
+### Memory-related process termination
 
-This is an operating-system process termination rather than a Python exception;
-on a small-memory machine it is commonly an out-of-memory kill. Keep the
-configured batch size and 128-token sequence limit, close other large
-applications, and ensure there is adequate available memory and swap. Swap may
-avoid an immediate kill but can make CPU training substantially slower.
+- keep the sequence length at or under 128 tokens
+- avoid running memory-heavy apps at the same time
+- reduce the amount of source text used in a training run
 
-### `MLX runtime is not available` during Ollama import
+## Notes
 
-Do not import the Safetensors directory directly on Windows. Convert
-`models/qwen3-0.6b-merged/` to GGUF using the deployment steps above and point the
-`Modelfile` at the resulting `.gguf` file. The LoRA directory contains only the
-adapter and is not the model to convert.
-
-### Missing package/import error
-
-Reinstall the declared dependencies into the project environment:
-
-Linux:
-
-```bash
-uv pip install --python .venv/bin/python -r requirements.txt
-```
-
-Windows PowerShell or Command Prompt:
-
-```powershell
-uv pip install --python .venv\Scripts\python.exe -r requirements.txt
-```
-
-The PyTorch `KernelPreference` / `ScaleCalculationMode` Enum deprecation
-warnings are emitted by the installed PyTorch stack and are not, by themselves,
-training failures.
+- This project defaults to a paragraph reconstruction objective and is not a full fact-verified tutoring system.
+- Review generated training examples before training if you need a different learning target.
+- Generated intermediate data and model outputs can be rebuilt from the source documents.

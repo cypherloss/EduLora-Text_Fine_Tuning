@@ -85,9 +85,26 @@ def validate_training_jsonl() -> None:
                 raise ValueError(
                     f"Invalid JSON on line {line_number} of {training_path}: {exc}"
                 ) from exc
-            if "messages" not in payload or not isinstance(payload["messages"], list):
+            messages = payload.get("messages")
+            if not isinstance(messages, list) or not messages:
                 raise ValueError(
                     f"Training example on line {line_number} is missing a valid 'messages' list."
+                )
+            if any(not isinstance(message, dict) for message in messages):
+                raise ValueError(
+                    f"Training example on line {line_number} contains a non-object message entry."
+                )
+            if messages[0].get("role") != "user":
+                raise ValueError(
+                    f"Training example on line {line_number} must start with a user message."
+                )
+            if messages[-1].get("role") != "assistant":
+                raise ValueError(
+                    f"Training example on line {line_number} must end with an assistant message."
+                )
+            if not isinstance(messages[0].get("content", ""), str) or not isinstance(messages[-1].get("content", ""), str):
+                raise ValueError(
+                    f"Training example on line {line_number} has invalid message content types."
                 )
             examples += 1
 

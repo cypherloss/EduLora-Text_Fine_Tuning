@@ -99,12 +99,15 @@ def main():
         tokenized_dataset.save_to_disk(str(staged_output))
 
         if output_path.exists():
-            output_path.replace(backup_output)
+            if output_path.is_dir():
+                output_path.rename(backup_output)
+            else:
+                output_path.unlink()
         try:
-            staged_output.replace(output_path)
+            staged_output.rename(output_path)
         except OSError:
             if backup_output.exists() and not output_path.exists():
-                backup_output.replace(output_path)
+                backup_output.rename(output_path)
             raise
 
         if backup_output.exists():
