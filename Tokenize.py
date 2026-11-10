@@ -5,12 +5,9 @@ from pathlib import Path
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-from datasets import load_dataset
-from transformers import AutoTokenizer
-
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_NAME = "Qwen/Qwen3-0.6B"
-MODEL_REPO = "Qwen/Qwen3-0.6B"
+MODEL_NAME = "Qwen/Qwen3-1.7B"
+MODEL_REPO = "Qwen/Qwen3-1.7B"
 
 INPUT_FILE = BASE_DIR / "data" / "processed" / "training.jsonl"
 OUTPUT_DIR = BASE_DIR / "data" / "tokenized"
@@ -19,6 +16,41 @@ MAX_LENGTH = 128
 
 def resolve_model_name(model_name: str | None = None) -> str:
     return (model_name or MODEL_NAME).strip()
+
+
+def tokenize_example(example: dict, tokenizer, max_length: int = MAX_LENGTH) -> dict:
+    if max_length < 2:
+        raise ValueError("max_length must be at least 2 tokens.")
+
+    messages = example["messages"]
+    prompt_ids = tokenizer.apply_chat_template(
+        messages[:-1],
+        tokenize=True,
+        add_generation_prompt=True,
+    )
+    full_ids = tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=False,
+    )
+
+    if not prompt_ids or len(full_ids) <= len(prompt_ids):
+        raise ValueError("Training example has no assistant response tokens.")
+    if full_ids[: len(prompt_ids)] != prompt_ids:
+        raise ValueError(
+            "The chat template does not preserve the prompt as a prefix; "
+            "cannot safely truncate this training example."
+        )
+
+    answer_ids = full_ids[len(prompt_ids) :]
+    answer_budget = min(len(answer_ids), max_length - 1)
+    prompt_budget = max_length - answer_budget
+    input_ids = prompt_ids[-prompt_budget:] + answer_ids[:answer_budget]
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": [1] * len(input_ids),
+    }
 
 
 def main():
@@ -31,6 +63,9 @@ def main():
         )
 
     print("Loading tokenizer...")
+
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(
         resolve_model_name(MODEL_NAME),
@@ -55,31 +90,10 @@ def main():
 
     print(f"Training examples: {len(dataset):,}")
 
-    def tokenize_example(example):
-        messages = example["messages"]
-
-        text = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=False,
-        )
-
-        tokens = tokenizer(
-            text,
-            truncation=True,
-            max_length=MAX_LENGTH,
-            padding=False,
-        )
-
-        return {
-            "input_ids": tokens["input_ids"],
-            "attention_mask": tokens["attention_mask"],
-        }
-
     print("Tokenizing...")
 
     tokenized_dataset = dataset.map(
-        tokenize_example,
+        lambda example: tokenize_example(example, tokenizer),
         remove_columns=dataset.column_names,
         desc="Tokenizing",
     )

@@ -1,11 +1,10 @@
 from pathlib import Path
 import json
+import posixpath
 import re
 import zipfile
 from html import unescape
 from xml.etree import ElementTree as ET
-
-import pdfplumber
 
 try:
     from docx import Document as DocxDocument
@@ -20,6 +19,8 @@ SUPPORTED_SUFFIXES = {".pdf", ".txt", ".docx", ".epub"}
 
 
 def extract_pdf(pdf_path: Path) -> dict:
+    import pdfplumber
+
     pages = []
 
     with pdfplumber.open(pdf_path) as pdf:
@@ -73,11 +74,45 @@ def extract_docx(docx_path: Path) -> dict:
 
 def extract_epub(epub_path: Path) -> dict:
     with zipfile.ZipFile(epub_path) as archive:
-        html_files = sorted(
-            name
-            for name in archive.namelist()
-            if name.lower().endswith((".xhtml", ".html", ".xml"))
-        )
+        archive_names = set(archive.namelist())
+        html_files = []
+        try:
+            container = ET.fromstring(archive.read("META-INF/container.xml"))
+            package_path = next(
+                element.attrib["full-path"]
+                for element in container.iter()
+                if element.tag.endswith("rootfile")
+            )
+            package = ET.fromstring(archive.read(package_path))
+            manifest = {
+                item.attrib["id"]: posixpath.normpath(
+                    posixpath.join(
+                        posixpath.dirname(package_path),
+                        item.attrib["href"].split("#", 1)[0],
+                    )
+                )
+                for item in package.iter()
+                if item.tag.endswith("item")
+                and "id" in item.attrib
+                and "href" in item.attrib
+            }
+            html_files = [
+                manifest[itemref.attrib["idref"]]
+                for itemref in package.iter()
+                if itemref.tag.endswith("itemref")
+                and itemref.attrib.get("idref") in manifest
+                and manifest[itemref.attrib["idref"]].lower().endswith(
+                    (".xhtml", ".html", ".htm", ".xml")
+                )
+            ]
+        except (KeyError, StopIteration, ET.ParseError):
+            html_files = sorted(
+                name
+                for name in archive_names
+                if name.lower().endswith((".xhtml", ".html", ".htm"))
+                and posixpath.basename(name).lower()
+                not in {"toc.xhtml", "nav.xhtml"}
+            )
 
         if not html_files:
             return {
@@ -87,11 +122,9 @@ def extract_epub(epub_path: Path) -> dict:
 
         text_parts = []
         for file_name in html_files:
-            try:
-                content = archive.read(file_name)
-            except KeyError:
+            if file_name not in archive_names:
                 continue
-
+            content = archive.read(file_name)
             try:
                 root = ET.fromstring(content)
                 text = "\n".join(
@@ -138,7 +171,7 @@ def main():
 
     source_files = sorted(
         path
-        for path in PDF_DIR.iterdir()
+        for path in PDF_DIR.rglob("*")
         if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
     )
 
@@ -149,12 +182,26 @@ def main():
             f"Supported formats: {supported_names}"
         )
 
+    output_paths = {}
+    for source_path in source_files:
+        relative_path = source_path.relative_to(PDF_DIR)
+        output_file = (OUTPUT_DIR / relative_path).with_suffix(".json")
+        key = str(output_file).casefold()
+        if key in output_paths:
+            raise ValueError(
+                f"Source files {output_paths[key]} and {source_path} map to the "
+                f"same output file: {output_file}"
+            )
+        output_paths[key] = source_path
+
     for source_path in source_files:
         print(f"Extracting: {source_path.name}")
 
         document = extract_document(source_path)
-
-        output_file = OUTPUT_DIR / f"{source_path.stem}.json"
+        relative_path = source_path.relative_to(PDF_DIR)
+        document["source"] = relative_path.as_posix()
+        output_file = (OUTPUT_DIR / relative_path).with_suffix(".json")
+        output_file.parent.mkdir(parents=True, exist_ok=True)
 
         output_file.write_text(
             json.dumps(

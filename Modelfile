@@ -1,11 +1,11 @@
 # =========================================================
 # Project: Philosophy AI
-# Base Model: Qwen3 0.6B
+# Base Model: Qwen3 1.7B
 # Runtime: Ollama
 # Purpose: Philosophy, formal logic, critical reasoning
 # =========================================================
 
-FROM ./models/qwen3-0.6b-f16.gguf
+FROM ./models/qwen3-1.7b-f16.gguf
 
 # -------------------------
 # Generation Parameters

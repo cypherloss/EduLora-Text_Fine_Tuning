@@ -1,5 +1,6 @@
 import argparse
 import gc
+import hashlib
 import json
 import math
 import os
@@ -14,12 +15,14 @@ import torch.nn.functional as functional
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 BASE_DIR = Path(__file__).resolve().parent
-BASE_MODEL = "Qwen/Qwen3-0.6B"
-FINETUNED_MODEL = BASE_DIR / "models" / "qwen3-0.6b-merged"
+BASE_MODEL = "Qwen/Qwen3-1.7B"
+FINETUNED_MODEL = BASE_DIR / "models" / "qwen3-1.7b-merged"
 EVALUATION_FILE = BASE_DIR / "data" / "evaluation.jsonl"
 OUTPUT_DIR = BASE_DIR / "models" / "evaluation"
 DEFAULT_MAX_LENGTH = 512
 DEFAULT_MAX_NEW_TOKENS = 128
+OPIK_PROJECT_NAME = os.getenv("OPIK_PROJECT_NAME", "edu-lora-qwen3-eval")
+OPIK_JUDGE_MODEL = os.getenv("OPIK_JUDGE_MODEL", "gpt-5-nano")
 
 
 def load_evaluation_examples(path: Path) -> list[dict]:
@@ -281,6 +284,140 @@ def evaluate_model(
     return summary
 
 
+def log_to_opik(
+    model_predictions: dict[str, tuple[str | Path, list[dict]]],
+    examples: list[dict],
+    *,
+    judge_model: str,
+) -> None:
+    api_key = os.getenv("OPIK_API_KEY")
+    opik_url = os.getenv("OPIK_URL_OVERRIDE") or os.getenv("OPIK_URL")
+    if not api_key and not opik_url:
+        raise ValueError(
+            "--opik requires OPIK_API_KEY for Opik Cloud, or OPIK_URL_OVERRIDE "
+            "to identify a self-hosted Opik instance."
+        )
+
+    try:
+        import opik
+        from opik.evaluation import evaluate
+        from opik.evaluation.metrics import Hallucination
+    except ImportError as exc:
+        raise RuntimeError(
+            "Opik logging was requested but the opik package is unavailable. "
+            "Install the project dependencies with: uv pip install -r requirements.txt"
+        ) from exc
+
+    if set(model_predictions) != {"base", "finetuned"}:
+        raise ValueError(
+            "Opik evaluation requires predictions for both the base and "
+            "fine-tuned models."
+        )
+
+    dataset_items = []
+    for example in examples:
+        example_id = str(example["line_number"])
+        prompt_messages = example["messages"][:-1]
+        user_messages = [
+            message["content"]
+            for message in prompt_messages
+            if message["role"] == "user"
+        ]
+        dataset_items.append(
+            {
+                "input": {
+                    "evaluation_id": example_id,
+                    "messages": prompt_messages,
+                    "question": "\n\n".join(user_messages),
+                    "context": user_messages,
+                },
+                "expected_output": example["reference"],
+                "metadata": example["metadata"],
+            }
+        )
+
+    for model_label, (_, predictions) in model_predictions.items():
+        if len(examples) != len(predictions):
+            raise ValueError(
+                f"The number of Opik evaluation examples does not match the "
+                f"number of {model_label} predictions."
+            )
+
+    dataset_fingerprint = hashlib.sha256(
+        json.dumps(
+            dataset_items,
+            sort_keys=True,
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+
+    opik.configure(api_key=api_key, project_name=OPIK_PROJECT_NAME)
+    client = opik.Opik(project_name=OPIK_PROJECT_NAME)
+    dataset = client.get_or_create_dataset(
+        name=f"edu-lora-evaluation-{dataset_fingerprint}",
+        description="Held-out examples shared by the base and fine-tuned model evaluations.",
+    )
+    dataset.insert(dataset_items)
+
+    for model_label, (model_name_or_path, predictions) in model_predictions.items():
+        predictions_by_id = {
+            str(example["line_number"]): result["prediction"]
+            for example, result in zip(examples, predictions)
+        }
+
+        def task(item, predictions_for_task=predictions_by_id):
+            example_id = str(item["input"]["evaluation_id"])
+            try:
+                prediction = predictions_for_task[example_id]
+            except KeyError as exc:
+                raise ValueError(
+                    f"Opik dataset contains an unexpected evaluation example: {example_id}"
+                ) from exc
+            return {"output": prediction}
+
+        result = evaluate(
+            dataset=dataset,
+            task=task,
+            scoring_metrics=[Hallucination(model=judge_model)],
+            scoring_key_mapping={"input": "question"},
+            experiment_name=f"qwen3-1.7b-{model_label}",
+            project_name=OPIK_PROJECT_NAME,
+        )
+        hallucination_scores = [
+            score
+            for test_result in result.test_results
+            for score in test_result.score_results
+            if score.name == "hallucination_metric"
+        ]
+        failed_scores = [
+            score for score in hallucination_scores if score.scoring_failed
+        ]
+        if failed_scores:
+            reasons = "; ".join(
+                score.reason or "No failure reason provided."
+                for score in failed_scores
+            )
+            raise RuntimeError(
+                f"Opik hallucination scoring failed for {len(failed_scores)} "
+                f"{model_label} examples. Details: {reasons}"
+            )
+        if len(hallucination_scores) != len(examples):
+            raise RuntimeError(
+                f"Opik returned {len(hallucination_scores)} hallucination "
+                f"scores for {len(examples)} {model_label} examples."
+            )
+
+        mean_hallucination = sum(
+            score.value for score in hallucination_scores
+        ) / len(hallucination_scores)
+        print(
+            f"Opik evaluation logged for {model_label} ({model_name_or_path}) "
+            f"to project '{OPIK_PROJECT_NAME}' using judge '{judge_model}'. "
+            f"Mean hallucination score: {mean_hallucination:.4f} "
+            f"(lower is better)."
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate the base Qwen model, its fine-tuned version, or both."
@@ -326,6 +463,16 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MAX_NEW_TOKENS,
         help="Maximum number of tokens generated per prompt.",
     )
+    parser.add_argument(
+        "--opik",
+        action="store_true",
+        help="Log base/fine-tuned predictions to Opik and score hallucinations.",
+    )
+    parser.add_argument(
+        "--opik-judge-model",
+        default=OPIK_JUDGE_MODEL,
+        help="LiteLLM model name for Opik's hallucination judge.",
+    )
     return parser.parse_args()
 
 
@@ -335,6 +482,32 @@ def main() -> None:
         raise ValueError("--max-length must be at least 2.")
     if args.max_new_tokens < 1:
         raise ValueError("--max-new-tokens must be positive.")
+    if args.opik and args.models != "both":
+        raise ValueError(
+            "--opik evaluates both the base and fine-tuned models; "
+            "do not combine it with --models base or --models finetuned."
+        )
+    if (
+        args.opik
+        and not os.getenv("OPIK_API_KEY")
+        and not (os.getenv("OPIK_URL_OVERRIDE") or os.getenv("OPIK_URL"))
+    ):
+        raise ValueError(
+            "--opik requires OPIK_API_KEY for Opik Cloud or OPIK_URL_OVERRIDE "
+            "for a self-hosted Opik instance."
+        )
+    if args.opik and not args.opik_judge_model.strip():
+        raise ValueError("--opik-judge-model must not be empty.")
+    if (
+        args.opik
+        and args.opik_judge_model.startswith(("gpt-", "o1", "o3", "o4"))
+        and not os.getenv("OPENAI_API_KEY")
+    ):
+        raise ValueError(
+            f"The Opik judge model {args.opik_judge_model!r} requires "
+            "OPENAI_API_KEY. Set it or choose a model supported by your "
+            "configured LiteLLM provider."
+        )
 
     examples = load_evaluation_examples(args.data)
     print(f"Evaluation examples: {len(examples):,}")
@@ -351,6 +524,7 @@ def main() -> None:
             "Run fine_tuneing.py first, or pass --finetuned-model with a valid model path."
         )
 
+    opik_predictions = {}
     for model_label, model_path in models_to_evaluate:
         evaluate_model(
             model_path,
@@ -360,11 +534,26 @@ def main() -> None:
             max_length=args.max_length,
             max_new_tokens=args.max_new_tokens,
         )
+        if args.opik:
+            predictions_path = args.output_dir / model_label / "predictions.jsonl"
+            predictions = [
+                json.loads(line)
+                for line in predictions_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            opik_predictions[model_label] = (model_path, predictions)
+
+    if args.opik:
+        log_to_opik(
+            opik_predictions,
+            examples,
+            judge_model=args.opik_judge_model,
+        )
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (FileNotFoundError, ValueError, OSError) as exc:
+    except (FileNotFoundError, ValueError, OSError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

@@ -78,7 +78,7 @@ def main():
         exist_ok=True,
     )
 
-    json_files = list(INPUT_DIR.glob("*.json"))
+    json_files = sorted(INPUT_DIR.rglob("*.json"))
 
     if not json_files:
         raise FileNotFoundError(
@@ -98,9 +98,8 @@ def main():
             document
         )
 
-        output_file = (
-            OUTPUT_DIR / input_file.name
-        )
+        output_file = OUTPUT_DIR / input_file.relative_to(INPUT_DIR)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
 
         output_file.write_text(
             json.dumps(

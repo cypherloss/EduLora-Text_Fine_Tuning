@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-MODEL_NAME = "Qwen/Qwen3-0.6B"
-MODEL_REPO = "Qwen/Qwen3-0.6B"
+MODEL_NAME = "Qwen/Qwen3-1.7B"
+MODEL_REPO = "Qwen/Qwen3-1.7B"
 DATASET_DIR = ROOT / "data" / "tokenized"
 
 
@@ -23,19 +23,21 @@ def ensure_python_version() -> None:
     if version.major != 3 or version.minor not in {10, 11, 12, 13}:
         raise RuntimeError(
             f"Unsupported Python version: {version.major}.{version.minor}. "
-            "This project supports Python 3.10 through 3.13 on Linux."
+            "This project supports Python 3.10 through 3.13 on Windows and Linux."
         )
     print(f"Python {version.major}.{version.minor}.{version.micro} OK")
 
 
 def ensure_dependencies() -> None:
     required = [
+        "torch",
         "datasets",
         "peft",
         "trl",
         "transformers",
         "accelerate",
         "pdfplumber",
+        "docx",
     ]
 
     missing = []

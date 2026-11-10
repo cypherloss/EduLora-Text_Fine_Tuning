@@ -1,10 +1,10 @@
 ﻿# EduLora Text Fine-Tuning
 
-A lightweight educational text fine-tuning pipeline for Qwen3 0.6B. It reads source documents from PDF, TXT, DOCX, and EPUB files, cleans and normalizes the extracted text, builds a supervised chat-style dataset, tokenizes it with the selected Hugging Face tokenizer, and fine-tunes a CPU-only LoRA adapter.
+A lightweight educational text fine-tuning pipeline for Qwen3 1.7B. It reads source documents from PDF, TXT, DOCX, and EPUB files, cleans and normalizes the extracted text, builds a supervised chat-style dataset, tokenizes it with the selected Hugging Face tokenizer, and fine-tunes a CPU-only LoRA adapter.
 
 This repository is intended for educational content experiments and small-scale fine-tuning. The default objective is simple: the model is shown a paragraph and trained to reproduce that paragraph in a user/assistant chat format. This is useful for reconstruction-style learning and educational text restatement, but it does not automatically create fact-checking or domain-specific tutoring behavior.
 
-> Model: Qwen/Qwen3-0.6B
+> Model: Qwen/Qwen3-1.7B
 
 ## Overview
 
@@ -155,7 +155,7 @@ python Tokenize.py
 
 ### Extraction details
 
-`Extract_Pdf.py` scans `data/pdfs/` and extracts text from each supported file. It stores a JSON document for each source file in `data/raw/`.
+`Extract_Pdf.py` scans `data/pdfs/` and its subfolders, extracts text from each supported file, and stores a JSON document under the matching relative path in `data/raw/`. EPUB chapters are processed in the order declared by the EPUB spine.
 
 Example raw output:
 
@@ -212,7 +212,7 @@ The generated file is saved at `data/processed/training.jsonl`.
 
 ### Tokenization details
 
-`Tokenize.py` loads the tokenizer for `Qwen/Qwen3-0.6B`, applies the chat template, and truncates each example to a maximum of 128 tokens.
+`Tokenize.py` loads the tokenizer for `Qwen/Qwen3-1.7B`, applies the chat template, and limits each example to 128 tokens while retaining the start of the assistant response.
 
 The tokenized dataset is saved under `data/tokenized/`.
 
@@ -222,6 +222,12 @@ Validate the environment and data before training:
 
 ```bash
 python test.py
+```
+
+Run the dependency-free pipeline regression tests with:
+
+```bash
+python -m unittest discover -s tests -v
 ```
 
 This script checks:
@@ -255,7 +261,7 @@ The training configuration is CPU-only and intentionally conservative:
 - LoRA rank 16 and alpha 32
 - dropout 0.05
 - attention and MLP projection targets
-- 1 epoch, batch size 1, gradient accumulation 8
+- 4 epochs, batch size 1, gradient accumulation 8
 - max sequence length 128
 - gradient checkpointing enabled
 - fp16/bf16 disabled
@@ -268,8 +274,8 @@ This setup is designed for stability on consumer hardware, but fine-tuning can s
 
 Successful training writes:
 
-- `models/qwen3-0.6b-lora/` — LoRA adapter and tokenizer files
-- `models/qwen3-0.6b-merged/` — merged model checkpoint
+- `models/qwen3-1.7b-lora/` — LoRA adapter and tokenizer files
+- `models/qwen3-1.7b-merged/` — merged model checkpoint
 
 The model is stored in Hugging Face format and can be converted to GGUF for Ollama use.
 
@@ -287,13 +293,15 @@ Example:
 
 Keep the evaluation examples out of the training data. The project does not create a held-out split automatically.
 
-After fine-tuning has produced `models/qwen3-0.6b-merged/`, evaluate both the base and fine-tuned models on the same examples:
+After fine-tuning has produced `models/qwen3-1.7b-merged/`, evaluate both the base and fine-tuned models on the same examples. The `--opik` option logs both sets of predictions to separate Opik experiments that share one held-out dataset, then scores each with Opik's LLM-as-a-judge hallucination metric. Set `OPIK_API_KEY` for Opik Cloud and the judge provider's API key (by default, `OPENAI_API_KEY`) before running.
 
 ```bash
-python Evaluate_Model.py
+python Evaluate_Model.py --opik
 ```
 
-By default, the script evaluates `Qwen/Qwen3-0.6B` and the merged model, then writes results to:
+The judge defaults to `gpt-5-nano`. Choose another LiteLLM-supported judge model with `--opik-judge-model` or set `OPIK_JUDGE_MODEL`. The judge makes separate API requests and may incur provider charges. For a self-hosted Opik server, set `OPIK_URL_OVERRIDE` instead of `OPIK_API_KEY`.
+
+By default, the script evaluates `Qwen/Qwen3-1.7B` and the merged model, then writes results to:
 
 - `models/evaluation/base/summary.json`
 - `models/evaluation/base/predictions.jsonl`
@@ -329,7 +337,7 @@ uv venv --python 3.12 tools/llama.cpp/.venv
 cd tools/llama.cpp
 uv pip install --python .venv/bin/python -r requirements/requirements-convert_hf_to_gguf.txt
 cd ../..
-tools/llama.cpp/.venv/bin/python tools/llama.cpp/convert_hf_to_gguf.py models/qwen3-0.6b-merged --outfile models/qwen3-0.6b-f16.gguf --outtype f16
+tools/llama.cpp/.venv/bin/python tools/llama.cpp/convert_hf_to_gguf.py models/qwen3-1.7b-merged --outfile models/qwen3-1.7b-f16.gguf --outtype f16
 ```
 
 Windows PowerShell:
@@ -340,7 +348,7 @@ uv venv --python 3.12 tools/llama.cpp/.venv
 Set-Location tools/llama.cpp
 uv pip install --python .venv\Scripts\python.exe -r requirements\requirements-convert_hf_to_gguf.txt
 Set-Location ..\..
-& .\tools\llama.cpp\.venv\Scripts\python.exe .\tools\llama.cpp\convert_hf_to_gguf.py .\models\qwen3-0.6b-merged --outfile .\models\qwen3-0.6b-f16.gguf --outtype f16
+& .\tools\llama.cpp\.venv\Scripts\python.exe .\tools\llama.cpp\convert_hf_to_gguf.py .\models\qwen3-1.7b-merged --outfile .\models\qwen3-1.7b-f16.gguf --outtype f16
 ```
 
 ### Create and run locally

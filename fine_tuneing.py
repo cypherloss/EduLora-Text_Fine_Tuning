@@ -11,11 +11,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
 from trl import SFTTrainer
 
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_NAME = "Qwen/Qwen3-0.6B"
-MODEL_REPO = "Qwen/Qwen3-0.6B"
+MODEL_NAME = "Qwen/Qwen3-1.7B"
+MODEL_REPO = "Qwen/Qwen3-1.7B"
 DATASET_DIR = BASE_DIR / "data" / "tokenized"
-CPU_ADAPTER_DIR = BASE_DIR / "models" / "qwen3-0.6b-lora"
-MERGED_DIR = BASE_DIR / "models" / "qwen3-0.6b-merged"
+CPU_ADAPTER_DIR = BASE_DIR / "models" / "qwen3-1.7b-lora"
+MERGED_DIR = BASE_DIR / "models" / "qwen3-1.7b-merged"
 MAX_SEQUENCE_LENGTH = 128
 
 
