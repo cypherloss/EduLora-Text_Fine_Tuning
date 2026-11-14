@@ -1,150 +1,76 @@
-﻿# EduLora Text Fine-Tuning
+# EduLoRA Text Fine-Tuning
 
-A lightweight educational text fine-tuning pipeline for Qwen3 1.7B. It reads source documents from PDF, TXT, DOCX, and EPUB files, cleans and normalizes the extracted text, builds a supervised chat-style dataset, tokenizes it with the selected Hugging Face tokenizer, and fine-tunes a CPU-only LoRA adapter.
+A small, educational project that shows how to prepare your own text and use it to fine-tune the **Qwen3 1.7B** language model with LoRA. It can read PDF, plain-text, Word (`.docx`), and EPUB files, then turn their text into a dataset for training.
 
-This repository is intended for educational content experiments and small-scale fine-tuning. The default objective is simple: the model is shown a paragraph and trained to reproduce that paragraph in a user/assistant chat format. This is useful for reconstruction-style learning and educational text restatement, but it does not automatically create fact-checking or domain-specific tutoring behavior.
+> **In plain language:** You provide documents, the scripts prepare examples from them, and the model practices reproducing the text in those examples. This is a learning project—not a ready-made, fact-checking tutor or a guarantee that a model will answer questions correctly.
 
-> Model: Qwen/Qwen3-1.7B
+## What the project does
 
-## Overview
+The scripts take your documents through these steps:
 
-The pipeline includes these stages:
+1. **Read documents** and save the extracted text.
+2. **Tidy the text** by fixing line breaks, spaces, and words split between lines.
+3. **Make practice examples** from paragraphs containing at least 20 words.
+4. **Turn words into model-readable numbers** (called tokens).
+5. **Fine-tune the model** on the CPU using LoRA, a method that trains a small set of extra model weights instead of updating every weight.
+6. **Save the trained adapter and merged model** so you can evaluate or use them later.
 
-1. Extract text from supported source files in `data/pdfs/`.
-2. Normalize extracted text and split it into paragraphs.
-3. Convert paragraphs into user/assistant examples in JSONL format.
-4. Tokenize the examples with the model tokenizer and store the dataset cache.
-5. Train LoRA adapters on CPU.
-6. Merge the trained adapter with the base model and save the checkpoint.
+Training examples currently ask the model to reproduce a source paragraph. They do **not** teach it to explain the paragraph in its own words, answer questions about it, or reliably learn new facts. Choose documents you have permission to use, and review the training examples before training.
 
-## Supported source formats
-
-The extractor supports:
-
-- PDF
-- TXT
-- DOCX
-- EPUB
-
-Place any supported file into `data/pdfs/` and run the pipeline from the repo root.
-
-### Convert a folder of EPUB books to PDF
-
-The project can read EPUB files directly. If you also need PDF copies, install
-[Calibre](https://calibre-ebook.com/download) and put the EPUB files in
-`data/epubs/`. Run:
-
-```bash
-python Convert_Epub_To_Pdf.py
-```
-
-By default, the script searches `data/epubs/` recursively and writes the PDFs
-to `data/pdfs/`, which is the folder used by the rest of the project's data
-pipeline. Existing PDFs are skipped. To replace them, add `--overwrite`.
-
-Use a different input or output folder with:
-
-```bash
-python Convert_Epub_To_Pdf.py --input-dir path/to/epubs --output-dir path/to/pdfs
-```
-
-If Calibre's `ebook-convert` command is not on `PATH`, provide its executable:
-
-```bash
-python Convert_Epub_To_Pdf.py --converter "C:\Program Files\Calibre2\ebook-convert.exe"
-```
-
-The conversion script preserves subfolder structure and reports failed
-conversions separately; its exit code is non-zero if any book fails.
-
-## Project layout
-
-| Path | Purpose |
-| --- | --- |
-| `Extract_Pdf.py` | Extracts text from PDF, TXT, DOCX, and EPUB files and writes raw JSON under `data/raw/`. |
-| `Convert_Epub_To_Pdf.py` | Batch converts EPUB books to PDFs with Calibre and saves them under `data/pdfs/`. |
-| `Clean_Text.py` | Cleans the extracted JSON and normalizes paragraph spacing. |
-| `Training_Dataset.py` | Builds `data/processed/training.jsonl` from cleaned text. |
-| `Tokenize.py` | Loads the tokenizer, applies chat templating, and saves tokenized data under `data/tokenized/`. |
-| `fine_tuneing.py` | Validates the dataset, trains the CPU LoRA adapter, and saves the merged model. |
-| `Evaluate_Model.py` | Evaluates the base and fine-tuned models on the same held-out JSONL examples. |
-| `test.py` | Validates Python compatibility, dependencies, model settings, dataset structure, and tokenized cache. |
-| `requirements.txt` | Project dependencies and compatible version pins. |
-| `Modelfile` | Ollama model definition for a converted GGUF model. |
-| `data/pdfs/` | Source documents. |
-| `data/raw/` | Raw extracted JSON output. |
-| `data/clean/` | Cleaned JSON output. |
-| `data/processed/` | Training dataset output. |
-| `data/tokenized/` | Tokenized dataset cache. |
-| `models/` | LoRA and merged model outputs. |
-
-## Requirements
+## What you need
 
 - Windows 10/11 or Linux
-- Python 3.10 through 3.13
-- `uv` recommended for environment setup and dependency installation
-- Internet access on the first tokenizer/model download
-- Enough RAM for the base model, optimizer state, and CPU activations
+- Python 3.10, 3.11, 3.12, or 3.13
+- Internet access for the first download of the model and tokenizer
+- Free disk space and enough memory (RAM) for the model and training data
+- `uv` to create the Python environment and install dependencies
 
-## Installation
+Training runs on the **CPU**, not the GPU. It can be slow and use a lot of memory. If your computer stops the training process, try using fewer or shorter documents and close other memory-heavy applications.
 
-Run the commands from the repository root.
+## Get started
+
+Open a terminal (PowerShell on Windows), and run these commands from the folder where you want the project:
+
+```bash
+git clone https://github.com/cypherloss/EduLora-Text_Fine_Tuning.git
+cd EduLora-Text_Fine_Tuning
+```
+
+Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/) if it is not already installed. Then create a Python 3.12 environment and install the project packages.
 
 ### Linux
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
 uv python install 3.12
 uv venv --python 3.12 .venv
 source .venv/bin/activate
 uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
-To activate the environment later:
-
-```bash
-source .venv/bin/activate
-```
-
 ### Windows PowerShell
 
 ```powershell
-winget install --id=astral-sh.uv -e
-# Close and reopen PowerShell after installing uv, then continue:
 uv python install 3.12
 uv venv --python 3.12 .venv
 .\.venv\Scripts\Activate.ps1
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 ```
 
-To activate later:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
+If PowerShell says that scripts are disabled, follow [Microsoft's instructions for PowerShell execution policies](https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_execution_policies) or use Command Prompt instead.
 
 ### Windows Command Prompt
 
 ```cmd
-winget install --id=astral-sh.uv -e
-REM Reopen Command Prompt after installing uv, then continue:
 uv python install 3.12
 uv venv --python 3.12 .venv
 .venv\Scripts\activate.bat
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 ```
 
-To activate later:
+## Prepare your documents
 
-```cmd
-.venv\Scripts\activate.bat
-```
-
-## Data preparation
-
-Place your supported source files in `data/pdfs/`.
-
-Then run the pipeline:
+1. Put your PDF, TXT, DOCX, and/or EPUB files inside `data/pdfs/`. You can make this folder if it does not exist. Subfolders are also searched.
+2. Run each preparation script from the project folder, in this order:
 
 ```bash
 python Extract_Pdf.py
@@ -153,241 +79,119 @@ python Training_Dataset.py
 python Tokenize.py
 ```
 
-### Extraction details
+Each step uses the files made by the step before it. The prepared training examples are saved as `data/processed/training.jsonl`; the tokenized dataset is saved in `data/tokenized/`.
 
-`Extract_Pdf.py` scans `data/pdfs/` and its subfolders, extracts text from each supported file, and stores a JSON document under the matching relative path in `data/raw/`. EPUB chapters are processed in the order declared by the EPUB spine.
-
-Example raw output:
-
-```json
-{
-  "source": "example.pdf",
-  "pages": [
-    {"page": 1, "text": "..."}
-  ]
-}
-```
-
-TXT and DOCX are treated as single-page content. EPUB content is extracted from its embedded HTML/XML content before being normalized.
-
-### Cleaning details
-
-`Clean_Text.py` performs the following:
-
-- fixes Windows/Linux line endings
-- repairs hyphenated words that were split across lines
-- normalizes spaces and tabs
-- collapses single-line breaks into paragraph spacing
-- removes excessive blank lines
-- trims paragraph edges
-
-The cleaned content is written to `data/clean/`.
-
-### Training dataset details
-
-`Training_Dataset.py` splits the cleaned text into paragraphs and keeps only paragraphs with at least 20 words.
-
-A generated training record looks like:
-
-```json
-{
-  "messages": [
-    {
-      "role": "user",
-      "content": "Explain the following educational content clearly.\n\n..."
-    },
-    {
-      "role": "assistant",
-      "content": "..."
-    }
-  ],
-  "metadata": {
-    "source": "book.pdf",
-    "page": 1
-  }
-}
-```
-
-The generated file is saved at `data/processed/training.jsonl`.
-
-### Tokenization details
-
-`Tokenize.py` loads the tokenizer for `Qwen/Qwen3-1.7B`, applies the chat template, and limits each example to 128 tokens while retaining the start of the assistant response.
-
-The tokenized dataset is saved under `data/tokenized/`.
-
-## Validation
-
-Validate the environment and data before training:
+**EPUB note:** EPUB files can be read directly from `data/pdfs/`. If you specifically want to convert EPUB books into PDFs, install [Calibre](https://calibre-ebook.com/download), place EPUBs in `data/epubs/`, and run:
 
 ```bash
-python test.py
+python Convert_Epub_To_Pdf.py
 ```
 
-Run the dependency-free pipeline regression tests with:
+The conversion script skips PDFs that already exist. Use `--overwrite` to replace them. Use `python Convert_Epub_To_Pdf.py --help` to see other options.
 
-```bash
-python -m unittest discover -s tests -v
-```
+## Check the setup and data
 
-This script checks:
-
-- Python version compatibility
-- required dependencies
-- model identifier configuration
-- JSONL structure
-- tokenized dataset columns
-- token ID range compatibility
-- maximum training sequence length
-
-To validate only the environment before creating the dataset:
+Before preparing data, check Python and the installed packages:
 
 ```bash
 python test.py --skip-data
 ```
 
-## Fine-tuning
+After preparing the training data and tokenized dataset, run the full check:
 
-Start training from the repository root:
+```bash
+python test.py
+```
+
+To run the project's automated unit tests:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## Fine-tune the model
+
+Once the data checks pass, start training:
 
 ```bash
 python fine_tuneing.py
 ```
 
-The training configuration is CPU-only and intentionally conservative:
+The project uses the `Qwen/Qwen3-1.7B` model, trains on the CPU in 32-bit precision, and uses LoRA. Training is configured for 3 passes through the examples, one example at a time, with gradient accumulation to reduce memory use. Each training sequence is limited to 128 tokens, so longer examples may be shortened. The first run downloads the model if it is not already cached and may take a long time.
 
-- base model loaded in float32
-- model placed on CPU
-- LoRA rank 16 and alpha 32
-- dropout 0.05
-- attention and MLP projection targets
-- 4 epochs, batch size 1, gradient accumulation 8
-- max sequence length 128
-- gradient checkpointing enabled
-- fp16/bf16 disabled
-- dataloader pinning disabled
-- BOS/EOS/PAD alignment with the tokenizer
+When training completes, the main outputs are:
 
-This setup is designed for stability on consumer hardware, but fine-tuning can still be memory intensive. If the OS kills the process, it is usually due to memory exhaustion. Keep other heavy applications closed when training.
+- `models/qwen3-1.7b-lora/` — the smaller LoRA adapter
+- `models/qwen3-1.7b-merged/` — the full model with the adapter merged in
 
-## Outputs
+These downloaded files, prepared datasets, and model outputs are generated locally and are not included in the repository.
 
-Successful training writes:
+## Evaluate the model (optional)
 
-- `models/qwen3-1.7b-lora/` — LoRA adapter and tokenizer files
-- `models/qwen3-1.7b-merged/` — merged model checkpoint
+Evaluation compares the original model and the fine-tuned model using examples that were **not** used for training. The project does not create this separate test set for you.
 
-The model is stored in Hugging Face format and can be converted to GGUF for Ollama use.
+Create `data/evaluation.jsonl` with one JSON example per line. Each example must have a `messages` list: one or more user messages followed by an assistant message containing the reference answer. Keep these examples separate from your training documents.
 
-## Evaluation
-
-Create a held-out evaluation file at `data/evaluation.jsonl` before running evaluation.
-
-Each row should use the same message format as the training dataset and should include a final assistant answer. Keep this file separate from `data/processed/training.jsonl`.
-
-Example:
+Example line:
 
 ```json
-{"messages":[{"role":"user","content":"Explain this educational content clearly.\n\n[held-out passage]"},{"role":"assistant","content":"[reference answer]"}],"metadata":{"source":"held-out-source.pdf","page":1}}
+{"messages":[{"role":"user","content":"Repeat this passage: The sun is a star."},{"role":"assistant","content":"The sun is a star."}]}
 ```
 
-Keep the evaluation examples out of the training data. The project does not create a held-out split automatically.
-
-After fine-tuning has produced `models/qwen3-1.7b-merged/`, evaluate both the base and fine-tuned models on the same examples with DeepEval. DeepEval scores each model's predictions for hallucination (lower is better) and answer relevance (higher is better), using the held-out prompt as context for the hallucination metric. Set `OPENAI_API_KEY` before running.
+After training, evaluate both models with:
 
 ```bash
-python Evaluate_Model.py --deepeval
+python Evaluate_Model.py
 ```
 
-The judge defaults to `gpt-5-nano`. Choose another DeepEval-supported OpenAI model with `--deepeval-judge-model` or set `DEEPEVAL_JUDGE_MODEL`. Judge requests may incur provider charges.
+The results are written under `models/evaluation/`. To evaluate just one model, use `--models base` or `--models finetuned`. Run `python Evaluate_Model.py --help` for all options.
 
-By default, the script evaluates `Qwen/Qwen3-1.7B` and the merged model, then writes results to:
+By default, this evaluation runs locally. The optional `--deepeval` feature uses an OpenAI model as an external judge and requires an `OPENAI_API_KEY`; it may send evaluation prompts and answers to that provider and may incur charges. Do not use it with private or sensitive text unless you have checked the provider's data terms and are allowed to share that text.
 
-- `models/evaluation/base/summary.json`
-- `models/evaluation/base/predictions.jsonl`
-- `models/evaluation/finetuned/summary.json`
-- `models/evaluation/finetuned/predictions.jsonl`
-- `models/evaluation/comparison.json` — DeepEval scores, local metrics, and fine-tuned-minus-base deltas.
+The built-in exact-match score rewards identical answers (apart from letter case and extra spaces), so it does not recognize answers that mean the same thing but use different words. Evaluation scores are only clues about performance on the examples you provide; they do not prove that the model is correct or safe.
 
-The summary reports token-weighted reference-answer negative log-likelihood and perplexity, plus normalized exact-match rate for greedy generations. The predictions file stores the reference answer, generated answer, metadata, and per-example scoring results. Exact match is a strict text metric and does not measure semantic similarity.
+## Use with Ollama (optional)
 
-Evaluate only one model, change the evaluation file or output directory, or adjust the token limits with options such as:
-
-```bash
-python Evaluate_Model.py --models base
-python Evaluate_Model.py --models finetuned
-python Evaluate_Model.py --data data/evaluation.jsonl --output-dir models/my-evaluation
-python Evaluate_Model.py --max-length 512 --max-new-tokens 64
-```
-
-The fine-tuned model is evaluated on CPU in float32, like the training setup. The first base-model run may download the model if it is not cached.
-
-## Ollama deployment
-
-The repo includes a `Modelfile` for local Ollama deployment.
-
-### Convert the merged model to GGUF
-
-If llama.cpp is not already installed, clone it and install conversion dependencies.
-
-Linux:
-
-```bash
-git clone https://github.com/ggml-org/llama.cpp.git tools/llama.cpp
-uv venv --python 3.12 tools/llama.cpp/.venv
-cd tools/llama.cpp
-uv pip install --python .venv/bin/python -r requirements/requirements-convert_hf_to_gguf.txt
-cd ../..
-tools/llama.cpp/.venv/bin/python tools/llama.cpp/convert_hf_to_gguf.py models/qwen3-1.7b-merged --outfile models/qwen3-1.7b-f16.gguf --outtype f16
-```
-
-Windows PowerShell:
-
-```powershell
-git clone https://github.com/ggml-org/llama.cpp.git tools/llama.cpp
-uv venv --python 3.12 tools/llama.cpp/.venv
-Set-Location tools/llama.cpp
-uv pip install --python .venv\Scripts\python.exe -r requirements\requirements-convert_hf_to_gguf.txt
-Set-Location ..\..
-& .\tools\llama.cpp\.venv\Scripts\python.exe .\tools\llama.cpp\convert_hf_to_gguf.py .\models\qwen3-1.7b-merged --outfile .\models\qwen3-1.7b-f16.gguf --outtype f16
-```
-
-### Create and run locally
+The repository includes an Ollama `Modelfile`. To use it, first convert `models/qwen3-1.7b-merged/` to a GGUF model file named `models/qwen3-1.7b-f16.gguf` using [llama.cpp's Hugging Face-to-GGUF converter](https://github.com/ggml-org/llama.cpp). Then, with Ollama installed, run:
 
 ```bash
 ollama create edulora -f Modelfile
 ollama run edulora
 ```
 
+GGUF conversion needs additional setup and disk space. See the [llama.cpp conversion guide](https://github.com/ggml-org/llama.cpp) for instructions for your operating system.
+
+## Project files
+
+| File or folder | What it is for |
+| --- | --- |
+| `Extract_Pdf.py` | Reads PDF, TXT, DOCX, and EPUB files from `data/pdfs/`. |
+| `Clean_Text.py` | Tidies the extracted text. |
+| `Training_Dataset.py` | Creates paragraph-based training examples. |
+| `Tokenize.py` | Prepares examples in the format expected by the model. |
+| `fine_tuneing.py` | Fine-tunes the model and saves its outputs. |
+| `Evaluate_Model.py` | Compares the original and fine-tuned model on a separate dataset. |
+| `Convert_Epub_To_Pdf.py` | Optionally converts EPUB files to PDF using Calibre. |
+| `test.py` | Checks the environment and prepared data. |
+| `tests/` | Automated unit tests. |
+| `requirements.txt` | Python packages needed by the project. |
+| `Modelfile` | Settings for running a converted model with Ollama. |
+| `data/` | Your input documents and generated datasets. |
+| `models/` | Downloaded, trained, merged, and evaluation model files. |
+
 ## Troubleshooting
 
-### Missing dependencies
+- **No documents found:** Check that supported files are inside `data/pdfs/` and that the file extension is `.pdf`, `.txt`, `.docx`, or `.epub`.
+- **A preparation step says a file is missing:** Run the preparation scripts in the order shown above, starting with `Extract_Pdf.py`.
+- **No training examples were created:** At least one cleaned paragraph must contain 20 or more words.
+- **Memory is low or training stops:** Try fewer or shorter documents, and close other memory-heavy programs. CPU training can be slow even when it works correctly.
+- **Token or tokenizer mismatch:** Rebuild the tokenized data by running `python Tokenize.py`, then run `python test.py` again.
+- **EPUB conversion does not start:** Install Calibre and make sure its `ebook-convert` program is available on your PATH. You can also give its location with `--converter`; see `python Convert_Epub_To_Pdf.py --help`.
 
-```bash
-uv pip install -r requirements.txt
-```
+## Contributing
 
-### No supported files found
+Contributions and suggestions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and open an [issue](https://github.com/cypherloss/EduLora-Text_Fine_Tuning/issues) if you find a problem or want to suggest an improvement.
 
-Ensure at least one of the supported formats exists in `data/pdfs/`.
+## License
 
-### Token index mismatch
-
-If you see tokenizer or embedding errors, rebuild the tokenized cache:
-
-```bash
-python Tokenize.py
-python test.py
-```
-
-### Memory-related process termination
-
-- keep the sequence length at or under 128 tokens
-- avoid running memory-heavy apps at the same time
-- reduce the amount of source text used in a training run
-
-## Notes
-
-- This project defaults to a paragraph reconstruction objective and is not a full fact-verified tutoring system.
-- Review generated training examples before training if you need a different learning target.
-- Generated intermediate data and model outputs can be rebuilt from the source documents.
+No license file is currently included in this repository. Check with the repository owner before copying, sharing, or using the code in another project.
