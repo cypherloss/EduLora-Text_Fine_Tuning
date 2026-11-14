@@ -293,13 +293,13 @@ Example:
 
 Keep the evaluation examples out of the training data. The project does not create a held-out split automatically.
 
-After fine-tuning has produced `models/qwen3-1.7b-merged/`, evaluate both the base and fine-tuned models on the same examples. The `--opik` option logs both sets of predictions to separate Opik experiments that share one held-out dataset, then scores each with Opik's LLM-as-a-judge hallucination metric. Set `OPIK_API_KEY` for Opik Cloud and the judge provider's API key (by default, `OPENAI_API_KEY`) before running.
+After fine-tuning has produced `models/qwen3-1.7b-merged/`, evaluate both the base and fine-tuned models on the same examples with DeepEval. DeepEval scores each model's predictions for hallucination (lower is better) and answer relevance (higher is better), using the held-out prompt as context for the hallucination metric. Set `OPENAI_API_KEY` before running.
 
 ```bash
-python Evaluate_Model.py --opik
+python Evaluate_Model.py --deepeval
 ```
 
-The judge defaults to `gpt-5-nano`. Choose another LiteLLM-supported judge model with `--opik-judge-model` or set `OPIK_JUDGE_MODEL`. The judge makes separate API requests and may incur provider charges. For a self-hosted Opik server, set `OPIK_URL_OVERRIDE` instead of `OPIK_API_KEY`.
+The judge defaults to `gpt-5-nano`. Choose another DeepEval-supported OpenAI model with `--deepeval-judge-model` or set `DEEPEVAL_JUDGE_MODEL`. Judge requests may incur provider charges.
 
 By default, the script evaluates `Qwen/Qwen3-1.7B` and the merged model, then writes results to:
 
@@ -307,6 +307,7 @@ By default, the script evaluates `Qwen/Qwen3-1.7B` and the merged model, then wr
 - `models/evaluation/base/predictions.jsonl`
 - `models/evaluation/finetuned/summary.json`
 - `models/evaluation/finetuned/predictions.jsonl`
+- `models/evaluation/comparison.json` — DeepEval scores, local metrics, and fine-tuned-minus-base deltas.
 
 The summary reports token-weighted reference-answer negative log-likelihood and perplexity, plus normalized exact-match rate for greedy generations. The predictions file stores the reference answer, generated answer, metadata, and per-example scoring results. Exact match is a strict text metric and does not measure semantic similarity.
 

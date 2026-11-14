@@ -38,6 +38,7 @@ def ensure_dependencies() -> None:
         "accelerate",
         "pdfplumber",
         "docx",
+        "deepeval",
     ]
 
     missing = []

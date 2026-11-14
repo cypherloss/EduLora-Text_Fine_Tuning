@@ -186,63 +186,49 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(tokenized["input_ids"][-15:], list(range(1000, 1015)))
         self.assertEqual(tokenized["attention_mask"], [1] * 16)
 
-    def test_opik_logs_both_models_against_one_shared_dataset(self):
-        class FakeDataset:
-            def __init__(self):
-                self.items = []
-                self.name = None
-                self.insert_calls = 0
+    def test_deepeval_scores_both_models_with_shared_examples(self):
+        evaluations = []
 
-            def insert(self, items):
-                self.insert_calls += 1
-                self.items.extend(items)
-
-        dataset = FakeDataset()
-        experiments = []
-
-        class FakeClient:
-            def get_or_create_dataset(self, *, name, description):
-                dataset.name = name
-                return dataset
-
-        class FakeHallucination:
+        class FakeMetric:
             def __init__(self, *, model):
                 self.model = model
 
-        def fake_evaluate(**kwargs):
-            experiments.append(kwargs)
-            input_row = dataset.items[0]["input"]
-            kwargs["task"]({"input": input_row})
+        class FakeTestCase:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        def fake_evaluate(*, test_cases, metrics):
+            evaluations.append((test_cases, metrics))
+            is_finetuned = test_cases[0].actual_output == "Tuned answer."
+            hallucination_score = 0.1 if is_finetuned else 0.2
+            relevance_score = 0.9 if is_finetuned else 0.8
             return SimpleNamespace(
                 test_results=[
                     SimpleNamespace(
-                        score_results=[
-                            SimpleNamespace(
-                                name="hallucination_metric",
-                                value=0.0,
-                                scoring_failed=False,
-                                reason=None,
-                            )
+                        metrics_data=[
+                            SimpleNamespace(score=hallucination_score, error=None),
+                            SimpleNamespace(score=relevance_score, error=None),
                         ]
                     )
                 ]
             )
 
-        opik_module = type(
-            "FakeOpikModule",
+        deepeval_module = type(
+            "FakeDeepEvalModule",
             (),
-            {
-                "configure": staticmethod(lambda **kwargs: None),
-                "Opik": staticmethod(lambda **kwargs: FakeClient()),
-            },
-        )()
-        evaluation_module = type(
-            "FakeEvaluationModule", (), {"evaluate": staticmethod(fake_evaluate)}
+            {"evaluate": staticmethod(fake_evaluate)},
         )()
         metrics_module = type(
-            "FakeMetricsModule", (), {"Hallucination": FakeHallucination}
+            "FakeMetricsModule",
+            (),
+            {
+                "HallucinationMetric": FakeMetric,
+                "AnswerRelevancyMetric": FakeMetric,
+            },
         )()
-
+        test_case_module = type(
+            "FakeTestCaseModule", (), {"LLMTestCase": FakeTestCase}
+        )()
         examples = [
             {
                 "messages": [
@@ -266,39 +252,32 @@ class PipelineTests(unittest.TestCase):
             patch.dict(
                 "sys.modules",
                 {
-                    "opik": opik_module,
-                    "opik.evaluation": evaluation_module,
-                    "opik.evaluation.metrics": metrics_module,
+                    "deepeval": deepeval_module,
+                    "deepeval.metrics": metrics_module,
+                    "deepeval.test_case": test_case_module,
                 },
             ),
-            patch.dict(
-                "os.environ",
-                {"OPIK_API_KEY": "test-key", "OPENAI_API_KEY": "test-judge-key"},
-            ),
-            patch.object(Evaluate_Model, "OPIK_PROJECT_NAME", "test-project"),
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test-judge-key"}),
         ):
-            Evaluate_Model.log_to_opik(
+            report = Evaluate_Model.evaluate_with_deepeval(
                 model_predictions,
                 examples,
                 judge_model="test-judge",
             )
 
-        self.assertEqual(len(experiments), 2)
-        self.assertEqual(dataset.insert_calls, 1)
-        self.assertEqual(experiments[0]["experiment_name"], "qwen3-1.7b-base")
-        self.assertEqual(
-            experiments[1]["experiment_name"],
-            "qwen3-1.7b-finetuned",
-        )
-        self.assertIs(experiments[0]["dataset"], experiments[1]["dataset"])
-        self.assertEqual(experiments[0]["scoring_key_mapping"], {"input": "question"})
-        self.assertEqual(experiments[0]["scoring_metrics"][0].model, "test-judge")
-        self.assertEqual(experiments[0]["task"]({"input": dataset.items[0]["input"]}), {
-            "output": "Base answer."
-        })
-        self.assertEqual(experiments[1]["task"]({"input": dataset.items[0]["input"]}), {
-            "output": "Tuned answer."
-        })
+        self.assertEqual(len(evaluations), 2)
+        self.assertEqual(len(evaluations[0][0]), len(examples))
+        self.assertEqual(evaluations[0][0][0].input, "Explain a passage.")
+        self.assertEqual(evaluations[0][0][0].actual_output, "Base answer.")
+        self.assertEqual(evaluations[0][0][0].expected_output, "Reference answer.")
+        self.assertEqual(evaluations[0][0][0].context, ["Explain a passage."])
+        self.assertEqual(len(evaluations[0][1]), 2)
+        self.assertTrue(all(metric.model == "test-judge" for metric in evaluations[0][1]))
+        self.assertEqual(report["framework"], "DeepEval")
+        self.assertEqual(report["models"]["base"]["hallucination_metric"], 0.2)
+        self.assertEqual(report["models"]["base"]["answer_relevancy_metric"], 0.8)
+        self.assertEqual(report["models"]["finetuned"]["hallucination_metric"], 0.1)
+        self.assertEqual(report["models"]["finetuned"]["answer_relevancy_metric"], 0.9)
 
 
 if __name__ == "__main__":

@@ -108,7 +108,7 @@ def create_training_arguments(output_dir: Path):
     return TrainingArguments(
         output_dir=str(output_dir),
         use_cpu=True,
-        num_train_epochs=4,
+        num_train_epochs=3,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=8,
         learning_rate=1e-4,

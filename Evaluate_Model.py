@@ -1,6 +1,5 @@
 import argparse
 import gc
-import hashlib
 import json
 import math
 import os
@@ -21,8 +20,7 @@ EVALUATION_FILE = BASE_DIR / "data" / "evaluation.jsonl"
 OUTPUT_DIR = BASE_DIR / "models" / "evaluation"
 DEFAULT_MAX_LENGTH = 512
 DEFAULT_MAX_NEW_TOKENS = 128
-OPIK_PROJECT_NAME = os.getenv("OPIK_PROJECT_NAME", "edu-lora-qwen3-eval")
-OPIK_JUDGE_MODEL = os.getenv("OPIK_JUDGE_MODEL", "gpt-5-nano")
+DEEPEVAL_JUDGE_MODEL = os.getenv("DEEPEVAL_JUDGE_MODEL", "gpt-5-nano")
 
 
 def load_evaluation_examples(path: Path) -> list[dict]:
@@ -284,138 +282,119 @@ def evaluate_model(
     return summary
 
 
-def log_to_opik(
+def evaluate_with_deepeval(
     model_predictions: dict[str, tuple[str | Path, list[dict]]],
     examples: list[dict],
     *,
     judge_model: str,
-) -> None:
-    api_key = os.getenv("OPIK_API_KEY")
-    opik_url = os.getenv("OPIK_URL_OVERRIDE") or os.getenv("OPIK_URL")
-    if not api_key and not opik_url:
+) -> dict:
+    if not os.getenv("OPENAI_API_KEY"):
         raise ValueError(
-            "--opik requires OPIK_API_KEY for Opik Cloud, or OPIK_URL_OVERRIDE "
-            "to identify a self-hosted Opik instance."
+            "--deepeval requires OPENAI_API_KEY for the LLM-as-a-judge metrics."
         )
 
     try:
-        import opik
-        from opik.evaluation import evaluate
-        from opik.evaluation.metrics import Hallucination
+        from deepeval import evaluate
+        from deepeval.metrics import AnswerRelevancyMetric, HallucinationMetric
+        from deepeval.test_case import LLMTestCase
     except ImportError as exc:
         raise RuntimeError(
-            "Opik logging was requested but the opik package is unavailable. "
+            "DeepEval was requested but the deepeval package is unavailable. "
             "Install the project dependencies with: uv pip install -r requirements.txt"
         ) from exc
 
     if set(model_predictions) != {"base", "finetuned"}:
         raise ValueError(
-            "Opik evaluation requires predictions for both the base and "
+            "DeepEval evaluation requires predictions for both the base and "
             "fine-tuned models."
-        )
-
-    dataset_items = []
-    for example in examples:
-        example_id = str(example["line_number"])
-        prompt_messages = example["messages"][:-1]
-        user_messages = [
-            message["content"]
-            for message in prompt_messages
-            if message["role"] == "user"
-        ]
-        dataset_items.append(
-            {
-                "input": {
-                    "evaluation_id": example_id,
-                    "messages": prompt_messages,
-                    "question": "\n\n".join(user_messages),
-                    "context": user_messages,
-                },
-                "expected_output": example["reference"],
-                "metadata": example["metadata"],
-            }
         )
 
     for model_label, (_, predictions) in model_predictions.items():
         if len(examples) != len(predictions):
             raise ValueError(
-                f"The number of Opik evaluation examples does not match the "
+                f"The number of DeepEval examples does not match the "
                 f"number of {model_label} predictions."
             )
 
-    dataset_fingerprint = hashlib.sha256(
-        json.dumps(
-            dataset_items,
-            sort_keys=True,
-            ensure_ascii=False,
-        ).encode("utf-8")
-    ).hexdigest()[:12]
-
-    opik.configure(api_key=api_key, project_name=OPIK_PROJECT_NAME)
-    client = opik.Opik(project_name=OPIK_PROJECT_NAME)
-    dataset = client.get_or_create_dataset(
-        name=f"edu-lora-evaluation-{dataset_fingerprint}",
-        description="Held-out examples shared by the base and fine-tuned model evaluations.",
-    )
-    dataset.insert(dataset_items)
-
+    prompt_contexts = [
+        [
+            message["content"]
+            for message in example["messages"][:-1]
+            if message["role"] == "user"
+        ]
+        for example in examples
+    ]
+    inputs = ["\n\n".join(context) for context in prompt_contexts]
+    metric_names = ("hallucination_metric", "answer_relevancy_metric")
+    model_scores = {}
     for model_label, (model_name_or_path, predictions) in model_predictions.items():
-        predictions_by_id = {
-            str(example["line_number"]): result["prediction"]
-            for example, result in zip(examples, predictions)
-        }
-
-        def task(item, predictions_for_task=predictions_by_id):
-            example_id = str(item["input"]["evaluation_id"])
-            try:
-                prediction = predictions_for_task[example_id]
-            except KeyError as exc:
-                raise ValueError(
-                    f"Opik dataset contains an unexpected evaluation example: {example_id}"
-                ) from exc
-            return {"output": prediction}
-
+        test_cases = [
+            LLMTestCase(
+                input=prompt,
+                actual_output=prediction["prediction"],
+                expected_output=example["reference"],
+                context=context,
+            )
+            for prompt, context, example, prediction in zip(
+                inputs, prompt_contexts, examples, predictions
+            )
+        ]
         result = evaluate(
-            dataset=dataset,
-            task=task,
-            scoring_metrics=[Hallucination(model=judge_model)],
-            scoring_key_mapping={"input": "question"},
-            experiment_name=f"qwen3-1.7b-{model_label}",
-            project_name=OPIK_PROJECT_NAME,
+            test_cases=test_cases,
+            metrics=[
+                HallucinationMetric(model=judge_model),
+                AnswerRelevancyMetric(model=judge_model),
+            ],
         )
-        hallucination_scores = [
-            score
-            for test_result in result.test_results
-            for score in test_result.score_results
-            if score.name == "hallucination_metric"
-        ]
-        failed_scores = [
-            score for score in hallucination_scores if score.scoring_failed
-        ]
-        if failed_scores:
-            reasons = "; ".join(
-                score.reason or "No failure reason provided."
-                for score in failed_scores
-            )
+        if len(result.test_results) != len(examples):
             raise RuntimeError(
-                f"Opik hallucination scoring failed for {len(failed_scores)} "
-                f"{model_label} examples. Details: {reasons}"
-            )
-        if len(hallucination_scores) != len(examples):
-            raise RuntimeError(
-                f"Opik returned {len(hallucination_scores)} hallucination "
-                f"scores for {len(examples)} {model_label} examples."
+                f"DeepEval returned {len(result.test_results)} test results for "
+                f"{len(examples)} {model_label} examples."
             )
 
-        mean_hallucination = sum(
-            score.value for score in hallucination_scores
-        ) / len(hallucination_scores)
+        scores_by_metric = {metric_name: [] for metric_name in metric_names}
+        for index, test_result in enumerate(result.test_results, start=1):
+            metric_results = test_result.metrics_data or []
+            if len(metric_results) != len(metric_names):
+                raise RuntimeError(
+                    f"DeepEval returned {len(metric_results)} metric results "
+                    f"for {model_label} example {index}; expected "
+                    f"{len(metric_names)}."
+                )
+            for metric_name, metric_result in zip(metric_names, metric_results):
+                if metric_result.error:
+                    raise RuntimeError(
+                        f"DeepEval {metric_name} failed for {model_label} "
+                        f"example {index}: {metric_result.error}"
+                    )
+                if metric_result.score is None or not math.isfinite(
+                    metric_result.score
+                ):
+                    raise RuntimeError(
+                        f"DeepEval returned an invalid {metric_name} score for "
+                        f"{model_label} example {index}."
+                    )
+                scores_by_metric[metric_name].append(metric_result.score)
+
+        model_scores[model_label] = {
+            metric_name: sum(scores) / len(scores)
+            for metric_name, scores in scores_by_metric.items()
+        }
         print(
-            f"Opik evaluation logged for {model_label} ({model_name_or_path}) "
-            f"to project '{OPIK_PROJECT_NAME}' using judge '{judge_model}'. "
-            f"Mean hallucination score: {mean_hallucination:.4f} "
-            f"(lower is better)."
+            f"DeepEval finished for {model_label} ({model_name_or_path}) "
+            f"using judge '{judge_model}'. Mean hallucination score: "
+            f"{model_scores[model_label]['hallucination_metric']:.4f} "
+            f"(lower is better); mean answer relevance: "
+            f"{model_scores[model_label]['answer_relevancy_metric']:.4f} "
+            f"(higher is better)."
         )
+
+    return {
+        "framework": "DeepEval",
+        "judge_model": judge_model,
+        "examples": len(examples),
+        "models": model_scores,
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -464,14 +443,14 @@ def parse_args() -> argparse.Namespace:
         help="Maximum number of tokens generated per prompt.",
     )
     parser.add_argument(
-        "--opik",
+        "--deepeval",
         action="store_true",
-        help="Log base/fine-tuned predictions to Opik and score hallucinations.",
+        help="Score both models with DeepEval hallucination and answer relevance metrics.",
     )
     parser.add_argument(
-        "--opik-judge-model",
-        default=OPIK_JUDGE_MODEL,
-        help="LiteLLM model name for Opik's hallucination judge.",
+        "--deepeval-judge-model",
+        default=DEEPEVAL_JUDGE_MODEL,
+        help="OpenAI model name used by DeepEval's LLM-as-a-judge metrics.",
     )
     return parser.parse_args()
 
@@ -482,32 +461,17 @@ def main() -> None:
         raise ValueError("--max-length must be at least 2.")
     if args.max_new_tokens < 1:
         raise ValueError("--max-new-tokens must be positive.")
-    if args.opik and args.models != "both":
+    if args.deepeval and args.models != "both":
         raise ValueError(
-            "--opik evaluates both the base and fine-tuned models; "
+            "--deepeval evaluates both the base and fine-tuned models; "
             "do not combine it with --models base or --models finetuned."
         )
-    if (
-        args.opik
-        and not os.getenv("OPIK_API_KEY")
-        and not (os.getenv("OPIK_URL_OVERRIDE") or os.getenv("OPIK_URL"))
-    ):
+    if args.deepeval and not os.getenv("OPENAI_API_KEY"):
         raise ValueError(
-            "--opik requires OPIK_API_KEY for Opik Cloud or OPIK_URL_OVERRIDE "
-            "for a self-hosted Opik instance."
+            "--deepeval requires OPENAI_API_KEY for the LLM-as-a-judge metrics."
         )
-    if args.opik and not args.opik_judge_model.strip():
-        raise ValueError("--opik-judge-model must not be empty.")
-    if (
-        args.opik
-        and args.opik_judge_model.startswith(("gpt-", "o1", "o3", "o4"))
-        and not os.getenv("OPENAI_API_KEY")
-    ):
-        raise ValueError(
-            f"The Opik judge model {args.opik_judge_model!r} requires "
-            "OPENAI_API_KEY. Set it or choose a model supported by your "
-            "configured LiteLLM provider."
-        )
+    if args.deepeval and not args.deepeval_judge_model.strip():
+        raise ValueError("--deepeval-judge-model must not be empty.")
 
     examples = load_evaluation_examples(args.data)
     print(f"Evaluation examples: {len(examples):,}")
@@ -524,7 +488,7 @@ def main() -> None:
             "Run fine_tuneing.py first, or pass --finetuned-model with a valid model path."
         )
 
-    opik_predictions = {}
+    deepeval_predictions = {}
     for model_label, model_path in models_to_evaluate:
         evaluate_model(
             model_path,
@@ -534,21 +498,58 @@ def main() -> None:
             max_length=args.max_length,
             max_new_tokens=args.max_new_tokens,
         )
-        if args.opik:
+        if args.deepeval:
             predictions_path = args.output_dir / model_label / "predictions.jsonl"
             predictions = [
                 json.loads(line)
                 for line in predictions_path.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
-            opik_predictions[model_label] = (model_path, predictions)
+            deepeval_predictions[model_label] = (model_path, predictions)
 
-    if args.opik:
-        log_to_opik(
-            opik_predictions,
+    if args.deepeval:
+        comparison = evaluate_with_deepeval(
+            deepeval_predictions,
             examples,
-            judge_model=args.opik_judge_model,
+            judge_model=args.deepeval_judge_model,
         )
+        comparison["local_metrics"] = {
+            model_label: json.loads(
+                (args.output_dir / model_label / "summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            for model_label, _ in models_to_evaluate
+        }
+        base_scores = comparison["models"]["base"]
+        finetuned_scores = comparison["models"]["finetuned"]
+        base_local = comparison["local_metrics"]["base"]
+        finetuned_local = comparison["local_metrics"]["finetuned"]
+        comparison["deltas_finetuned_minus_base"] = {
+            "hallucination_metric": (
+                finetuned_scores["hallucination_metric"]
+                - base_scores["hallucination_metric"]
+            ),
+            "answer_relevancy_metric": (
+                finetuned_scores["answer_relevancy_metric"]
+                - base_scores["answer_relevancy_metric"]
+            ),
+            "mean_negative_log_likelihood": (
+                finetuned_local["mean_negative_log_likelihood"]
+                - base_local["mean_negative_log_likelihood"]
+            ),
+            "normalized_exact_match_rate": (
+                finetuned_local["normalized_exact_match_rate"]
+                - base_local["normalized_exact_match_rate"]
+            ),
+        }
+        comparison_path = args.output_dir / "comparison.json"
+        comparison_path.parent.mkdir(parents=True, exist_ok=True)
+        comparison_path.write_text(
+            json.dumps(comparison, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"Comparison report saved to: {comparison_path}")
 
 
 if __name__ == "__main__":
